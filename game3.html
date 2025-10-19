@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Online Platformer Party</title>
+<style>
+body{margin:0;background:#111;color:#fff;font-family:sans-serif;text-align:center;}
+canvas{display:block;margin:10px auto;background:#222;}
+button,input{margin:5px;}
+#lobby{margin:10px;}
+</style>
+</head>
+<body>
+<h1>Online 2D Platformer Party</h1>
+<canvas id="game" width="800" height="400"></canvas>
+<div id="lobby">
+Username: <input type="text" id="username"><br>
+<button onclick="startHost()">Host Game</button>
+<input type="text" id="joinCode" placeholder="Join Code"><button onclick="joinGame()">Join Game</button>
+<button onclick="nextLevel()">Next Level</button>
+<p id="status">Not connected</p>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const gravity = 0.5;
+
+let username = "";
+let localPlayer = {x:50,y:300,w:30,h:50,dx:0,dy:0,color:'red',jumped:false,coins:0};
+let players = {}; // other players by username
+let platforms = [];
+let coins = [];
+let level = 0;
+let gameLoopInterval;
+let peer, conn;
+let isHost=false;
+let joinCode="";
+
+// --- Define levels ---
+const levels = [
+  {platforms:[{x:0,y:380,w:800,h:20},{x:150,y:300,w:100,h:20},{x:300,y:250,w:150,h:20}],coins:[{x:180,y:270,r:5},{x:350,y:220,r:5}]},
+  {platforms:[{x:0,y:380,w:800,h:20},{x:100,y:300,w:150,h:20},{x:400,y:250,w:200,h:20}],coins:[{x:150,y:270,r:5},{x:450,y:220,r:5},{x:550,y:220,r:5}]},
+];
+
+// Load initial level
+function loadLevel(n){
+  const lvl = levels[n % levels.length];
+  platforms = JSON.parse(JSON.stringify(lvl.platforms));
+  coins = JSON.parse(JSON.stringify(lvl.coins));
+  localPlayer.x = 50; localPlayer.y = 300; localPlayer.dy = 0;
+}
+
+// --- PeerJS setup ---
+function startHost(){
+  username = document.getElementById('username').value.trim()||'Host';
+  peer = new Peer();
+  isHost=true;
+  peer.on('open', id=>{
+    joinCode=id;
+    document.getElementById('status').innerText='Hosting. Code: '+joinCode;
+  });
+  peer.on('connection', c=>{
+    conn=c;
+    setupConnection(c);
+  });
+  loadLevel(level);
+}
+
+function joinGame(){
+  username = document.getElementById('username').value.trim()||'Player';
+  joinCode=document.getElementById('joinCode').value.trim();
+  if(!joinCode) return alert('Enter a join code');
+  peer = new Peer();
+  peer.on('open', id=>{
+    conn = peer.connect(joinCode);
+    setupConnection(conn);
+    document.getElementById('status').innerText='Connected to host';
+  });
+}
+
+function setupConnection(c){
+  c.on('data', data=>{
+    if(data.type==='stateUpdate'){
+      players = data.players;
+      coins = data.coins;
+      platforms = data.platforms;
+      level = data.level;
+    }
+  });
+  c.on('open', ()=>{
+    console.log('Connection open');
+  });
+}
+
+// --- Input ---
+const keys={};
+document.addEventListener('keydown', e=>keys[e.key]=true);
+document.addEventListener('keyup', e=>keys[e.key]=false);
+
+// --- Game update ---
+function update(){
+  // Local player controls
+  localPlayer.dx=0;
+  if(keys['ArrowLeft']||keys['a']) localPlayer.dx=-3;
+  if(keys['ArrowRight']||keys['d']) localPlayer.dx=3;
+  if((keys['ArrowUp']||keys['w']) && !localPlayer.jumped){ localPlayer.dy=-10; localPlayer.jumped=true; }
+
+  localPlayer.dy += gravity;
+  localPlayer.x += localPlayer.dx;
+  localPlayer.y += localPlayer.dy;
+
+  // Platform collisions
+  platforms.forEach(pl=>{
+    if(localPlayer.x+localPlayer.w>pl.x && localPlayer.x<pl.x+pl.w &&
+       localPlayer.y+localPlayer.h>pl.y && localPlayer.y+localPlayer.h<pl.y+pl.h+localPlayer.dy){
+      localPlayer.y = pl.y - localPlayer.h;
+      localPlayer.dy=0;
+      localPlayer.jumped=false;
+    }
+  });
+
+  // Coins collection
+  coins.forEach(c=>{
+    if(!c.claimed && localPlayer.x< c.x+c.r && localPlayer.x+localPlayer.w>c.x-c.r &&
+       localPlayer.y< c.y+c.r && localPlayer.y+localPlayer.h>c.y-c.r){
+      c.claimed=true;
+      localPlayer.coins++;
+    }
+  });
+
+  // Send state if host
+  if(isHost && conn && conn.open){
+    const state={type:'stateUpdate',players:{...players,[username]:localPlayer},coins,platforms,level};
+    conn.send(state);
+  }
+}
+
+// --- Draw ---
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // Platforms
+  ctx.fillStyle='green';
+  platforms.forEach(p=>ctx.fillRect(p.x,p.y,p.w,p.h));
+
+  // Coins
+  coins.forEach(c=>{
+    if(!c.claimed){
+      ctx.beginPath();
+      ctx.arc(c.x,c.y,c.r,0,Math.PI*2);
+      ctx.fillStyle='yellow';
+      ctx.fill();
+    }
+  });
+
+  // Local player
+  ctx.fillStyle=localPlayer.color;
+  ctx.fillRect(localPlayer.x,localPlayer.y,localPlayer.w,localPlayer.h);
+  ctx.fillStyle='white';
+  ctx.fillText(username+' Coins:'+localPlayer.coins,localPlayer.x,localPlayer.y-10);
+
+  // Other players
+  for(let p in players){
+    if(p!==username){
+      const plr=players[p];
+      ctx.fillStyle=plr.color||'blue';
+      ctx.fillRect(plr.x,plr.y,plr.w,plr.h);
+      ctx.fillStyle='white';
+      ctx.fillText(p+' Coins:'+plr.coins,plr.x,plr.y-10);
+    }
+  }
+}
+
+// --- Next level ---
+function nextLevel(){
+  level++;
+  loadLevel(level);
+}
+
+// --- Game loop ---
+function loop(){
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loadLevel(level);
+loop();
+</script>
+</body>
+</html>
